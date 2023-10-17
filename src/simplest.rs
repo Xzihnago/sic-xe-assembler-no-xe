@@ -68,7 +68,7 @@ fn main() {
     let source = fs::read_to_string("input.txt").unwrap();
 
     // Pass 1
-    let mut iter = source.lines().map(|l| {
+    let mut iter = source.lines().filter(|l| !l.starts_with(".")).map(|l| {
         l.to_uppercase()
             .split_whitespace()
             .map(str::to_owned)
@@ -201,43 +201,43 @@ fn main() {
     let mut iter = instructions.iter().zip(objcodes);
     let start = iter.next().unwrap();
 
-    let line_start = format!(
+    let line_head = format!(
         "H{:<6}{:06X}{:06X}",
         start.0.symbol.as_ref().unwrap(),
         start.0.loc,
         end.0.loc - start.0.loc
     );
-
-    let mut line_texts = Vec::new();
-    while let Some((ins, code)) = iter.next() {
-        let loc = ins.loc;
-
-        let mut text = code;
-        while text.len() <= 54 {
-            if let Some((ins, code)) = iter.next() {
-                if ins.opcode == "RESW" || ins.opcode == "RESB" {
-                    break;
-                } else {
-                    text.push_str(&code);
-                }
-            } else {
-                break;
-            }
-        }
-
-        if text.len() == 0 {
-            continue;
-        }
-
-        line_texts.push(format!("T{:06X}{:02X}{}", loc, text.len() >> 1, text));
-    }
-
     let line_end = format!("E{:06X}", start.0.loc);
+    let mut line_texts = Vec::new();
+
+    let mut temp = String::new();
+    loop {
+        if let Some((ins, code)) = iter.next() {
+            loc = ins.loc;
+
+            if temp.len() + code.len() > 60 || ins.opcode == "RESW" || ins.opcode == "RESB" {
+                if !temp.is_empty() {
+                    let len = temp.len() >> 1;
+                    line_texts.push(format!("T{:06X}{:02X}{}", loc - len, len, temp));
+                }
+
+                temp = code;
+                continue;
+            } else {
+                temp.push_str(&code);
+                loc += code.len() >> 1;
+            }
+        } else {
+            let len = temp.len() >> 1;
+            line_texts.push(format!("T{:06X}{:02X}{}", loc - len, len, temp));
+            break;
+        }
+    }
 
     writeln!(
         objcode_file,
         "{}\n{}\n{}",
-        line_start,
+        line_head,
         line_texts.join("\n"),
         line_end
     )
