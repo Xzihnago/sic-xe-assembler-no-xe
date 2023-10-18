@@ -76,10 +76,10 @@ fn main() {
     });
 
     let start = iter.next().unwrap();
-    let mut loc = usize::from_str_radix(&start[2], 16).unwrap();
+    let mut addr = usize::from_str_radix(&start[2], 16).unwrap();
 
     instructions.push(Instruction::new(
-        loc,
+        addr,
         Some(start[0].to_owned()),
         start[1].to_owned(),
         Some(start[2].to_owned()),
@@ -88,7 +88,7 @@ fn main() {
         match &line[..] {
             [symbol, opcode, operand] => {
                 instructions.push(Instruction::new(
-                    loc,
+                    addr,
                     Some(symbol.to_owned()),
                     opcode.to_owned(),
                     Some(operand.to_owned()),
@@ -97,33 +97,33 @@ fn main() {
                 match opcode.as_str() {
                     "BYTE" => {
                         match operand.split("'").collect::<Vec<_>>()[..] {
-                            ["X", hex, _] => loc += hex.len() >> 1,
-                            ["C", chars, _] => loc += chars.len(),
+                            ["X", hex, ""] => addr += hex.len() >> 1,
+                            ["C", chars, ""] => addr += chars.len(),
                             _ => unreachable!(),
                         };
                     }
-                    "WORD" => loc += 3,
-                    "RESB" => loc += usize::from_str_radix(&operand, 10).unwrap(),
-                    "RESW" => loc += 3 * usize::from_str_radix(&operand, 10).unwrap(),
-                    _ => loc += 3,
+                    "WORD" => addr += 3,
+                    "RESB" => addr += usize::from_str_radix(&operand, 10).unwrap(),
+                    "RESW" => addr += 3 * usize::from_str_radix(&operand, 10).unwrap(),
+                    _ => addr += 3,
                 }
             }
 
             [opcode, operand] => {
                 instructions.push(Instruction::new(
-                    loc,
+                    addr,
                     None,
                     opcode.to_owned(),
                     Some(operand.to_owned()),
                 ));
 
-                loc += 3;
+                addr += 3;
             }
 
             [opcode] => {
-                instructions.push(Instruction::new(loc, None, opcode.to_owned(), None));
+                instructions.push(Instruction::new(addr, None, opcode.to_owned(), None));
 
-                loc += 3;
+                addr += 3;
             }
 
             _ => unreachable!(),
@@ -133,8 +133,14 @@ fn main() {
     let symtab = instructions
         .iter()
         .filter(|ins| ins.symbol.is_some())
-        .map(|ins| (ins.symbol.clone().unwrap(), ins.loc))
+        .map(|ins| (ins.symbol.clone().unwrap(), ins.addr))
         .collect::<Vec<_>>();
+
+    // Write addr table
+    let mut addr_file = fs::File::create("loc.txt").unwrap();
+    for ins in &instructions {
+        writeln!(addr_file, "{}", ins).unwrap();
+    }
 
     // Pass 2
     let mut objcodes = Vec::new();
@@ -144,8 +150,8 @@ fn main() {
             "START" => "".to_owned(),
             "END" => "".to_owned(),
             "BYTE" => match ins.operand.as_ref().unwrap().split("'").collect::<Vec<_>>()[..] {
-                ["X", hex, _] => hex.to_owned(),
-                ["C", chars, _] => chars.chars().map(|c| format!("{:02X}", c as u8)).collect(),
+                ["X", hex, ""] => hex.to_owned(),
+                ["C", chars, ""] => chars.chars().map(|c| format!("{:02X}", c as u8)).collect(),
                 _ => unreachable!(),
             },
             "WORD" => {
@@ -182,70 +188,63 @@ fn main() {
         objcodes.push(objcode);
     }
 
-    // Write loc table
-    let mut loc_file = fs::File::create("loc.txt").unwrap();
-    for ins in &instructions {
-        writeln!(loc_file, "{}", ins).unwrap();
-    }
-
     // Write output table
     let mut output_file = fs::File::create("output.txt").unwrap();
     for (ins, code) in instructions.iter().zip(&objcodes) {
         writeln!(output_file, "{}\t{}", ins, code).unwrap();
     }
 
-    // Write object code
-    let mut objcode_file = fs::File::create("objectcode.txt").unwrap();
-    let end = (instructions.pop().unwrap(), objcodes.pop().unwrap());
+    // Format objcode
+    let mut lines = Vec::new();
 
-    let mut iter = instructions.iter().zip(objcodes);
-    let start = iter.next().unwrap();
-
-    let line_head = format!(
-        "H{:<6}{:06X}{:06X}",
-        start.0.symbol.as_ref().unwrap(),
-        start.0.loc,
-        end.0.loc - start.0.loc
-    );
-    let line_end = format!("E{:06X}", start.0.loc);
-    let mut line_texts = Vec::new();
-
+    let mut pname = String::new();
+    let mut paddr = 0;
     let mut temp = String::new();
-    loop {
-        if let Some((ins, code)) = iter.next() {
-            loc = ins.loc;
-
-            if temp.len() + code.len() > 60 || ins.opcode == "RESW" || ins.opcode == "RESB" {
+    for (ins, objcode) in instructions.iter().zip(objcodes) {
+        match ins.opcode.as_str() {
+            "START" => {
+                pname = ins.symbol.as_ref().unwrap().to_owned();
+                paddr = ins.addr;
+            }
+            "END" => {
                 if !temp.is_empty() {
                     let len = temp.len() >> 1;
-                    line_texts.push(format!("T{:06X}{:02X}{}", loc - len, len, temp));
+                    lines.push(format!("T{:06X}{:02X}{}", ins.addr - len, len, temp));
                 }
-
-                temp = code;
-                continue;
-            } else {
-                temp.push_str(&code);
-                loc += code.len() >> 1;
+                lines.insert(
+                    0,
+                    format!("H{:<6}{:06X}{:06X}", pname, paddr, ins.addr - paddr),
+                );
+                lines.push(format!("E{:06X}", paddr));
             }
-        } else {
-            let len = temp.len() >> 1;
-            line_texts.push(format!("T{:06X}{:02X}{}", loc - len, len, temp));
-            break;
+            "RESB" | "RESW" => {
+                if !temp.is_empty() {
+                    let len = temp.len() >> 1;
+                    lines.push(format!("T{:06X}{:02X}{}", ins.addr - len, len, temp));
+                }
+                temp = objcode;
+            }
+            _ => {
+                if temp.len() + objcode.len() > 60 {
+                    let len = temp.len() >> 1;
+                    lines.push(format!("T{:06X}{:02X}{}", ins.addr - len, len, temp));
+                    temp = objcode;
+                } else {
+                    temp.push_str(&objcode);
+                }
+            }
         }
     }
 
-    writeln!(
-        objcode_file,
-        "{}\n{}\n{}",
-        line_head,
-        line_texts.join("\n"),
-        line_end
-    )
-    .unwrap();
+    // Write object code
+    let mut objcode_file = fs::File::create("objectcode.txt").unwrap();
+    for line in &lines {
+        writeln!(objcode_file, "{}", line).unwrap();
+    }
 }
 
 struct Instruction {
-    pub loc: usize,
+    pub addr: usize,
     pub symbol: Option<String>,
     pub opcode: String,
     pub operand: Option<String>,
@@ -253,14 +252,14 @@ struct Instruction {
 
 impl fmt::Display for Instruction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match (self.loc, &self.symbol, &self.opcode, &self.operand) {
-            (loc, Some(symbol), opcode, Some(operand)) => {
-                write!(f, "{:04X}\t{}\t{}\t{}", loc, symbol, opcode, operand)
+        match (self.addr, &self.symbol, &self.opcode, &self.operand) {
+            (addr, Some(symbol), opcode, Some(operand)) => {
+                write!(f, "{:04X}\t{}\t{}\t{}", addr, symbol, opcode, operand)
             }
-            (loc, None, opcode, Some(operand)) => {
-                write!(f, "{:04X}\t\t{}\t{}", loc, opcode, operand)
+            (addr, None, opcode, Some(operand)) => {
+                write!(f, "{:04X}\t\t{}\t{}", addr, opcode, operand)
             }
-            (loc, None, opcode, None) => write!(f, "{:04X}\t\t{}\t", loc, opcode),
+            (addr, None, opcode, None) => write!(f, "{:04X}\t\t{}\t", addr, opcode),
             _ => unreachable!(),
         }
     }
@@ -268,13 +267,13 @@ impl fmt::Display for Instruction {
 
 impl Instruction {
     pub fn new(
-        loc: usize,
+        addr: usize,
         symbol: Option<String>,
         opcode: String,
         operand: Option<String>,
     ) -> Self {
         Self {
-            loc,
+            addr,
             symbol,
             opcode,
             operand,
