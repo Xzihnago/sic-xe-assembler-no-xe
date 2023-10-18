@@ -1,42 +1,48 @@
 use std::{
     fs::{self, File},
-    io::{BufReader, Write},
+    io::{BufRead, BufReader, Write},
 };
 
-mod instruction;
+pub mod instructions;
 pub mod loader;
-mod mapping;
-
-use instruction::Instruction;
 
 pub fn parse_sic(source: BufReader<File>) {
-    let instructions = Instruction::parse_into_vec(source);
+    let pass1 = instructions::pass1(source.lines().map(|l| l.unwrap()));
 
-    let symtab: Vec<(String, usize)> = instructions
-        .iter()
-        .filter(|ins| ins.symbol.is_some())
-        .map(|ins| (ins.symbol.clone().unwrap(), ins.loc))
-        .collect();
+    match pass1 {
+        Ok((instructions, symtab)) => {
+            // Write loc table
+            let mut loc_file = fs::File::create("loc.txt").unwrap();
+            for ins in &instructions {
+                writeln!(loc_file, "{}", ins).unwrap();
+            }
 
-    let obj_codes = instructions
-        .iter()
-        .map(|ins| ins.obj_code(&symtab))
-        .collect::<Vec<_>>();
+            let objcodes = instructions::pass2(&instructions, &symtab);
 
-    // Write loc table
-    let mut loc_file = fs::File::create("loc.txt").unwrap();
-    for ins in &instructions {
-        writeln!(loc_file, "{}", ins).unwrap();
-    }
+            match objcodes {
+                Ok(objcodes) => {
+                    // Write output table
+                    let mut output_file = fs::File::create("output.txt").unwrap();
+                    for (ins, code) in instructions.iter().zip(&objcodes) {
+                        writeln!(output_file, "{}\t{}", ins, code).unwrap();
+                    }
 
-    // Write output table
-    let mut output_file = fs::File::create("output.txt").unwrap();
-    for (ins, code) in instructions.iter().zip(&obj_codes) {
-        writeln!(output_file, "{}\t{}", ins, code).unwrap();
-    }
+                    let objectcode = instructions::format_objcode(&instructions, objcodes);
 
-    // Write objectcode code
-    let objectcode = Instruction::generate_objcode(instructions, obj_codes);
-    let mut objectcode_file = fs::File::create("objectcode.txt").unwrap();
-    writeln!(objectcode_file, "{}", objectcode).unwrap();
+                    // Write objectcode code
+                    let mut objectcode_file = fs::File::create("objectcode.txt").unwrap();
+                    for line in &objectcode {
+                        writeln!(objectcode_file, "{}", line).unwrap();
+                    }
+                }
+                Err(error) => {
+                    println!("{}", error);
+                }
+            }
+        }
+
+        Err(error) => {
+            println!("{}", error);
+        }
+    };
 }
